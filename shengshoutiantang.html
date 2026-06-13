@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>圣手天堂 · 猫头鹰</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: #ffffff;
+      font-family: system-ui, -apple-system, sans-serif;
+      cursor: crosshair;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    .scene {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+      will-change: transform;
+    }
+  </style>
+</head>
+<body>
+
+<div class="scene">
+  <svg
+    id="owl-svg"
+    viewBox="0 0 1920 1080"
+    preserveAspectRatio="xMidYMid meet"
+    xmlns="http://www.w3.org/2000/svg"
+  >
+    <defs>
+      <clipPath id="clip-l">
+        <rect id="clip-rect-l" x="755.46" y="415.77" width="248.45" height="248.45" rx="124.225" ry="124.225"/>
+      </clipPath>
+      <clipPath id="clip-r">
+        <rect id="clip-rect-r" x="1372.6" y="415.77" width="248.45" height="248.45" rx="124.225" ry="124.225"/>
+      </clipPath>
+    </defs>
+
+    <!-- 整体移动组：R1 鼠标偏移 -->
+    <g id="owl-group">
+
+      <!-- 左眼：黄色基底 -->
+      <rect id="eye-l" x="755.46" y="415.77" width="248.45" height="248.45" rx="124.225" ry="124.225" fill="#ffbc00"/>
+
+      <!-- 右眼：黄色基底 -->
+      <rect id="eye-r" x="1372.6" y="415.77" width="248.45" height="248.45" rx="124.225" ry="124.225" fill="#ffbc00"/>
+
+      <!-- 左瞳孔：黑色圆形（clip-path 约束在黄眼内） -->
+      <g clip-path="url(#clip-l)">
+        <circle id="pupil-l" cx="890.16" cy="542.44" r="93.19" fill="#1a1a1a"/>
+      </g>
+
+      <!-- 右瞳孔 -->
+      <g clip-path="url(#clip-r)">
+        <circle id="pupil-r" cx="1486.35" cy="542.44" r="93.19" fill="#1a1a1a"/>
+      </g>
+
+      <!-- 喙：原始 path，通过 group translate 左右移动 -->
+      <g id="beak-g">
+        <path id="beak" fill="#1a1a1a"
+          d="M1188.26,529.59
+             c-23.15,0-41.9,18.76-41.9,41.9
+             v50.83
+             c0,23.15,18.75,41.9,41.9,41.9
+             s41.89-18.75,41.89-41.9
+             v-50.83
+             c0-23.14-18.75-41.9-41.89-41.9
+             Z"/>
+      </g>
+
+    </g>
+  </svg>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ================================================================
+     DOM 引用
+     ================================================================ */
+  var svg       = document.getElementById('owl-svg');
+  var owlGroup  = document.getElementById('owl-group');
+  var eyeL      = document.getElementById('eye-l');
+  var eyeR      = document.getElementById('eye-r');
+  var pupilL    = document.getElementById('pupil-l');
+  var pupilR    = document.getElementById('pupil-r');
+  var beakG     = document.getElementById('beak-g');
+  var clipRectL = document.getElementById('clip-rect-l');
+  var clipRectR = document.getElementById('clip-rect-r');
+
+  /* ================================================================
+     原始几何常量（基于 SVG viewBox 1920×1080）
+     ================================================================ */
+  var VB_W     = 1920;
+  var VB_H     = 1080;
+  var GOLDEN   = 0.61803398875;
+  var ORIGIN_X = VB_W * GOLDEN;       // 1186.56 — 靠右黄金分割点
+  var ORIGIN_Y = VB_H / 2;            // 540     — 上下居中
+
+  /* 眼睛 */
+  var EYE_W       = 248.45;
+  var EYE_H_MAX   = 248.45;           // 正方形（光标在横中线时）
+  var EYE_H_MIN   = EYE_W / 4;        // 宽的 1/4 ≈ 62.11（光标最远时）
+  var EYE_L_X     = 755.46;
+  var EYE_R_X     = 1372.6;
+  var EYE_Y_ORIG  = 415.77;           // 原始左上角 y
+  var EYE_CY_ORIG = EYE_Y_ORIG + EYE_H_MAX / 2;  // 540
+
+  /* 瞳孔 */
+  var PUPIL_R_ORIG  = 93.19;
+  var PUPIL_R_MIN   = PUPIL_R_ORIG * 0.85;  // 79.21（最小为原来的 85%）
+  var PUPIL_L_CX    = 890.16;
+  var PUPIL_R_CX    = 1486.35;
+  var PUPIL_CY_ORIG = 542.44;
+  // 瞳孔相对眼睛中心的原始纵向偏移比例
+  var PUPIL_REL_Y = (PUPIL_CY_ORIG - EYE_CY_ORIG) / EYE_H_MAX;
+
+  /* 喙 */
+  var BEAK_CX     = 1188.26;
+  var BEAK_HALF_W = 41.9;
+
+  /* ================================================================
+     交互参数
+     ================================================================ */
+
+  /* R1: 整体偏移 — 极坐标方向，渐近衰减，上下左右均敏感 */
+  var MAX_OFFSET  = 85;       // SVG px 最大偏移（增大）
+  var HALF_SAT    = 250;      // 偏移响应半饱和距离（减小 → 更灵敏）
+  var VERT_BOOST  = 1.7;      // 垂直灵敏度倍率
+
+  /* R2: 眼睛高度 — 反比于 |mouseY - 540| */
+  var VERT_THRESHOLD = 380;   // 光标距横中线此距离时高度降至最低（减小 → 更灵敏）
+
+  /* R3: 眼睛垂直位移 — 正比于纵向偏移，范围加大 */
+  var EYE_Y_SHIFT_MAX = 24;
+  var EYE_Y_FACTOR    = 0.07;
+
+  /* R6: 眼睛水平位移 — 反向于光标距黄金分割线的偏移，光标偏右→眼睛偏左，反之亦然 */
+  var EYE_H_SHIFT_MAX  = 30;     // 最大水平偏移量
+  var EYE_H_FACTOR     = 0.05;   // 偏移系数（|dx|≥600 时达到上限）
+
+  /* R4: 喙左右移动 — 正比于距黄金分割竖线距离 */
+  var BEAK_FACTOR    = 0.22;
+  var BEAK_MAX_SHIFT = 40;
+  var MIN_EYE_GAP    = 22;    // 喙与眼睛最小间距
+
+  /* ================================================================
+     动画状态（全部通过 lerp 内插 → 丝滑过渡）
+     ================================================================ */
+  var state = {
+    offX: 0,
+    offY: 0,
+    eyeH: EYE_H_MAX,
+    eyeY: EYE_Y_ORIG,
+    eyeLX: EYE_L_X,
+    eyeRX: EYE_R_X,
+    beakShift: 0,
+    pupilR: PUPIL_R_ORIG,
+    pupilCY: PUPIL_CY_ORIG
+  };
+
+  /* 鼠标屏幕坐标（初始 = 黄金分割原点） */
+  var mouseSX = window.innerWidth * GOLDEN;
+  var mouseSY = window.innerHeight / 2;
+  var animId  = null;
+
+  /* ================================================================
+     工具函数
+     ================================================================ */
+  function clamp(v, lo, hi) {
+    return v < lo ? lo : v > hi ? hi : v;
+  }
+
+  function lerp(a, b, t) {
+    return a + (b - a) * t;
+  }
+
+  /** 屏幕坐标 → SVG viewBox 坐标（利用 getScreenCTM 精确映射） */
+  function screenToSVG(cx, cy) {
+    var pt = svg.createSVGPoint();
+    pt.x = cx;
+    pt.y = cy;
+    var ctm = svg.getScreenCTM();
+    if (!ctm) return { x: ORIGIN_X, y: ORIGIN_Y };
+    var sp = pt.matrixTransform(ctm.inverse());
+    return { x: sp.x, y: sp.y };
+  }
+
+  /* ================================================================
+     计算所有目标值（基于当前鼠标位置）
+     ================================================================ */
+  function computeTargets() {
+    var svgP  = screenToSVG(mouseSX, mouseSY);
+    var mx    = svgP.x;
+    var my    = svgP.y;
+    var dx    = mx - ORIGIN_X;
+    var dy    = my - ORIGIN_Y;
+    var angle = Math.atan2(dy, dx);
+    var dist  = Math.sqrt(dx * dx + dy * dy);
+
+    /* —— R1: 整体偏移（渐近衰减 + 垂直增强，上下左右均灵敏）—— */
+    var offsetMag = MAX_OFFSET * dist / (dist + HALF_SAT);
+    var tgtOffX   = offsetMag * Math.cos(angle);
+    var tgtOffY   = offsetMag * Math.sin(angle) * VERT_BOOST;
+
+    /* —— R2: 眼睛高度（反比于距横中线距离）—— */
+    var dyMid   = Math.abs(my - ORIGIN_Y);
+    var t       = clamp(dyMid / VERT_THRESHOLD, 0, 1);
+    var tgtEyeH = EYE_H_MAX - t * (EYE_H_MAX - EYE_H_MIN);
+
+    /* —— R3: 眼睛垂直位移（正比于纵向偏移，范围加大）—— */
+    var eyeShift = clamp((my - ORIGIN_Y) * EYE_Y_FACTOR, -EYE_Y_SHIFT_MAX, EYE_Y_SHIFT_MAX);
+    var eyeCY    = ORIGIN_Y + eyeShift;    // 新眼睛中心 y
+    var tgtEyeY  = eyeCY - tgtEyeH / 2;    // 新眼睛左上角 y
+
+    /* —— R6: 眼睛水平位移（反向：光标偏右→眼睛偏左，光标偏左→眼睛偏右）—— */
+    // shift > 0: 双眼一起向右移；shift < 0: 双眼一起向左移
+    var eyeHShift = clamp(-(mx - ORIGIN_X) * EYE_H_FACTOR, -EYE_H_SHIFT_MAX, EYE_H_SHIFT_MAX);
+    var tgtEyeLX  = EYE_L_X + eyeHShift;
+    var tgtEyeRX  = EYE_R_X + eyeHShift;
+
+    /* —— R4: 喙左右移动 —— */
+    var beakShift  = (mx - ORIGIN_X) * BEAK_FACTOR;
+    beakShift      = clamp(beakShift, -BEAK_MAX_SHIFT, BEAK_MAX_SHIFT);
+    // 边界安全：始终与两侧眼睛保持间距（以实时眼睛位置计算）
+    var curEyeLEdge = tgtEyeLX + EYE_W;
+    var curEyeREdge = tgtEyeRX;
+    var newBeakCX   = BEAK_CX + beakShift;
+    var leftLimit   = curEyeLEdge + MIN_EYE_GAP + BEAK_HALF_W;
+    var rightLimit  = curEyeREdge - MIN_EYE_GAP - BEAK_HALF_W;
+    var clampedCX   = clamp(newBeakCX, leftLimit, rightLimit);
+    beakShift       = clampedCX - BEAK_CX;
+
+    /* —— R5: 瞳孔缩放（随眼睛高度变化，min 85%，不跟随 R3 纵向位移）—— */
+    var heightRatio = tgtEyeH / EYE_H_MAX;
+    var pupilScale  = 0.85 + 0.15 * (heightRatio - 0.25) / 0.75;
+    var tgtPupilR   = PUPIL_R_ORIG * pupilScale;
+    // 瞳孔 cy 仅随眼睛高度等比缩放，不参与 R3 的纵向位移
+    var tgtPupilCY  = ORIGIN_Y + PUPIL_REL_Y * tgtEyeH;
+
+    return {
+      offX: tgtOffX, offY: tgtOffY,
+      eyeH: tgtEyeH, eyeY: tgtEyeY,
+      eyeLX: tgtEyeLX, eyeRX: tgtEyeRX,
+      beakShift: beakShift,
+      pupilR: tgtPupilR, pupilCY: tgtPupilCY
+    };
+  }
+
+  /* ================================================================
+     动画循环 — requestAnimationFrame + lerp 内插
+     ================================================================ */
+  function animate() {
+    var tgt = computeTargets();
+
+    /* 不同属性的内插系数略有差异，营造"分层跟随"的有机感 */
+    var L_POS   = 0.09;   // 整体位移：较慢 → 漂浮感
+    var L_EYE   = 0.11;   // 眼睛形变（高度、垂直位置）
+    var L_EYE_H = 0.10;   // 眼睛水平位移
+    var L_BEAK  = 0.08;   // 喙位移
+    var L_PUPIL = 0.14;   // 瞳孔：稍快 → 视线敏锐
+
+    state.offX     = lerp(state.offX,     tgt.offX,     L_POS);
+    state.offY     = lerp(state.offY,     tgt.offY,     L_POS);
+    state.eyeH     = lerp(state.eyeH,     tgt.eyeH,     L_EYE);
+    state.eyeY     = lerp(state.eyeY,     tgt.eyeY,     L_EYE);
+    state.eyeLX    = lerp(state.eyeLX,    tgt.eyeLX,    L_EYE_H);
+    state.eyeRX    = lerp(state.eyeRX,    tgt.eyeRX,    L_EYE_H);
+    state.beakShift = lerp(state.beakShift, tgt.beakShift, L_BEAK);
+    state.pupilR   = lerp(state.pupilR,   tgt.pupilR,   L_PUPIL);
+    state.pupilCY  = lerp(state.pupilCY,  tgt.pupilCY,  L_PUPIL);
+
+    /* —— 写入 DOM —— */
+
+    // R1: 整体平移
+    owlGroup.setAttribute('transform',
+      'translate(' + state.offX.toFixed(2) + ', ' + state.offY.toFixed(2) + ')');
+
+    // R2 + R3 + R6: 眼睛高度、垂直位置、水平位置、圆角（始终最大 = 半圆端）
+    var rx = state.eyeH / 2;
+    eyeL.setAttribute('x',      state.eyeLX.toFixed(2));
+    eyeL.setAttribute('y',      state.eyeY.toFixed(2));
+    eyeL.setAttribute('height', state.eyeH.toFixed(2));
+    eyeL.setAttribute('rx',     rx.toFixed(2));
+    eyeL.setAttribute('ry',     rx.toFixed(2));
+    eyeR.setAttribute('x',      state.eyeRX.toFixed(2));
+    eyeR.setAttribute('y',      state.eyeY.toFixed(2));
+    eyeR.setAttribute('height', state.eyeH.toFixed(2));
+    eyeR.setAttribute('rx',     rx.toFixed(2));
+    eyeR.setAttribute('ry',     rx.toFixed(2));
+
+    // 同步 clip-path rect（R5 的安全保障：瞳孔绝不超出黄眼）
+    clipRectL.setAttribute('x',      state.eyeLX.toFixed(2));
+    clipRectL.setAttribute('y',      state.eyeY.toFixed(2));
+    clipRectL.setAttribute('height', state.eyeH.toFixed(2));
+    clipRectL.setAttribute('rx',     rx.toFixed(2));
+    clipRectL.setAttribute('ry',     rx.toFixed(2));
+    clipRectR.setAttribute('x',      state.eyeRX.toFixed(2));
+    clipRectR.setAttribute('y',      state.eyeY.toFixed(2));
+    clipRectR.setAttribute('height', state.eyeH.toFixed(2));
+    clipRectR.setAttribute('rx',     rx.toFixed(2));
+    clipRectR.setAttribute('ry',     rx.toFixed(2));
+
+    // R5: 瞳孔半径 + 纵向位置（不跟随 R3 眼睛纵向位移）
+    pupilL.setAttribute('r',  state.pupilR.toFixed(2));
+    pupilL.setAttribute('cy', state.pupilCY.toFixed(2));
+    pupilR.setAttribute('r',  state.pupilR.toFixed(2));
+    pupilR.setAttribute('cy', state.pupilCY.toFixed(2));
+
+    // R4: 喙左右平移
+    beakG.setAttribute('transform',
+      'translate(' + state.beakShift.toFixed(2) + ', 0)');
+
+    animId = requestAnimationFrame(animate);
+  }
+
+  /* ================================================================
+     事件监听
+     ================================================================ */
+  function onMouseMove(e) {
+    mouseSX = e.clientX;
+    mouseSY = e.clientY;
+  }
+
+  function onTouchMove(e) {
+    if (e.touches.length) {
+      mouseSX = e.touches[0].clientX;
+      mouseSY = e.touches[0].clientY;
+    }
+  }
+
+  function onMouseLeave() {
+    mouseSX = window.innerWidth * GOLDEN;
+    mouseSY = window.innerHeight / 2;
+  }
+
+  document.addEventListener('mousemove', onMouseMove, { passive: true });
+  document.addEventListener('touchmove', onTouchMove, { passive: true });
+  document.addEventListener('mouseleave', onMouseLeave);
+
+  // 启动动画循环
+  animate();
+})();
+</script>
+
+</body>
+</html>
